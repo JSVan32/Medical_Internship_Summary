@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>医学生实习总结可视化生成器</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    body { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; background: #f5f7fa; margin: 20px; color: #333; }
+    .container { max-width: 1200px; margin: 0 auto; background: white; padding: 30px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+    h1 { text-align: center; color: #2c3e50; }
+    .step { margin: 25px 0; padding: 20px; background: #f8f9fa; border-radius: 12px; border-left: 5px solid #3498db; }
+    .step h3 { margin-top: 0; color: #3498db; }
+    label { font-weight: 600; margin-right: 10px; }
+    input, select, button { padding: 8px 12px; border-radius: 6px; border: 1px solid #ccc; font-size: 14px; }
+    button { background: #3498db; color: white; border: none; cursor: pointer; margin: 5px; }
+    button:hover { background: #2980b9; }
+    button.secondary { background: #95a5a6; }
+    .dim-options { display: flex; flex-wrap: wrap; gap: 10px; margin: 15px 0; }
+    .dim-options label { font-weight: normal; display: flex; align-items: center; gap: 5px; background: white; padding: 5px 12px; border-radius: 20px; border: 1px solid #ddd; cursor: pointer; }
+    .dim-options input[type="checkbox"] { margin: 0; }
+    .score-table { overflow-x: auto; margin-top: 20px; }
+    table { width: 100%; border-collapse: collapse; min-width: 800px; }
+    th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: center; font-size: 13px; }
+    th { background: #ecf0f1; }
+    .dept-header { background: #dfe6e9; font-weight: bold; }
+    .week-row { background: #f8f9fa; }
+    td input { width: 70px; text-align: center; }
+    .invalid { color: #e74c3c; font-size: 0.85em; }
+    .chart-container { margin: 30px 0; border: 1px solid #eee; border-radius: 8px; padding: 15px; background: white; }
+    .btn-generate { font-size: 1.2em; padding: 12px 30px; display: block; margin: 30px auto; }
+    .hidden { display: none; }
+    textarea { width: 100%; height: 300px; margin-top: 20px; font-family: 'Courier New', monospace; background: #f9f9f9; border-radius: 8px; padding: 15px; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>🩺 医学生实习总结可视化生成器</h1>
+  <p style="text-align: center;">输入你的实习数据，自动生成四张专业图表。评分范围 -5~5，可用 <b>100</b> 表示节假日、<b>200</b> 表示病假。</p>
+
+  <!-- 步骤1：科室数量与名称 -->
+  <div class="step">
+    <h3>① 实习科室设置</h3>
+    <label>科室数量：</label>
+    <input type="number" id="deptCount" value="6" min="1" max="10" style="width:80px;">
+    <label style="margin-left:20px;">自定义科室名称？</label>
+    <input type="checkbox" id="useCustomNames" onchange="toggleNameInputs()">
+    <div id="nameInputs" style="margin-top:15px; display:none;"></div>
+    <button onclick="updateDeptNames()" class="secondary">更新名称列表</button>
+  </div>
+
+  <!-- 步骤2：周数与维度选择 -->
+  <div class="step">
+    <h3>② 实习周数 & 评价维度</h3>
+    <label>每科室实习周数（默认7）：</label>
+    <input type="number" id="weeksCount" value="7" min="1" max="20" style="width:80px;">
+    <p class="invalid">提示：所有科室统一周数，暂不支持每科不同。</p>
+    
+    <h4>选择或添加评价维度（至少选1个）</h4>
+    <div class="dim-options" id="presetDims"></div>
+    <label>自定义维度（用逗号分隔）：</label>
+    <input type="text" id="customDims" placeholder="例如：应急能力,共情能力" style="width:300px;">
+    <button onclick="generateScoreTable()">③ 生成评分表格</button>
+  </div>
+
+  <!-- 步骤3：评分表格 -->
+  <div class="step" id="scoreStep" style="display:none;">
+    <h3>③ 评分输入（-5~5，100=节假日，200=病假）</h3>
+    <div class="score-table" id="scoreTableContainer"></div>
+    <p style="margin-top:10px;"><b>快速填充示例数据：</b> <button onclick="fillSample()" class="secondary">填入示例数据</button></p>
+  </div>
+
+  <!-- 生成按钮 -->
+  <button class="btn-generate" onclick="generateCharts()" style="display:none;" id="btnGen">🚀 生成我的实习报告</button>
+
+  <!-- 图表展示区 -->
+  <div id="chartsArea" style="display:none;">
+    <div class="chart-container" id="chart1"></div>
+    <div class="chart-container" id="chart2"></div>
+    <div class="chart-container" id="chart3"></div>
+    <div class="chart-container" id="chart4"></div>
+    <div class="chart-container">
+      <h3>📋 原始数据报告（可复制用于AI分析）</h3>
+      <textarea id="dataReport" readonly></textarea>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ==================== 全局变量 ====================
+  const HOLIDAY = 100, SICK = 200;
+  let departments = [];         // { name, weeks, scores: [[d1,d2,...] for week] }
+  let dimensions = [];         // 维度名称数组
+  let deptCount = 6;
+  let weeksPerDept = 7;
+
+  // 科室固定颜色（与维度对比图线条颜色一致）
+  const departmentColors = [
+    '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+    '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
+  ];
+
+  // 预定义维度列表（可修改）
+  const presetDimensions = [
+    "科室氛围", "工作量少", "身体素质", "精神状态", "环境条件",
+    "睡眠时间", "学习空间", "同伴关系", "临床知识", "带教契合度"
+  ];
+
+  // 初始化
+  window.onload = function() {
+    createPresetDimCheckboxes();
+    updateDeptNames(); // 默认科室1~6
+  };
+
+  function createPresetDimCheckboxes() {
+    const container = document.getElementById('presetDims');
+    container.innerHTML = '';
+    presetDimensions.forEach(dim => {
+      const label = document.createElement('label');
+      label.innerHTML = `<input type="checkbox" value="${dim}" checked> ${dim}`;
+      container.appendChild(label);
+    });
+  }
+
+  function toggleNameInputs() {
+    const useCustom = document.getElementById('useCustomNames').checked;
+    document.getElementById('nameInputs').style.display = useCustom ? 'block' : 'none';
+    if (useCustom) updateNameInputs();
+  }
+
+  function updateNameInputs() {
+    const count = parseInt(document.getElementById('deptCount').value);
+    const container = document.getElementById('nameInputs');
+    if (!document.getElementById('useCustomNames').checked) {
+      container.style.display = 'none';
+      return;
+    }
+    container.style.display = 'block';
+    let html = '';
+    for (let i = 0; i < count; i++) {
+      html += `<label>科室${i+1}名称：</label>
+               <input type="text" id="deptName${i}" value="科室${i+1}" style="width:120px; margin-right:15px;">`;
+    }
+    container.innerHTML = html;
+  }
+
+  function updateDeptNames() {
+    deptCount = parseInt(document.getElementById('deptCount').value);
+    const useCustom = document.getElementById('useCustomNames').checked;
+    departments = [];
+    if (useCustom) {
+      for (let i = 0; i < deptCount; i++) {
+        const input = document.getElementById(`deptName${i}`);
+        const name = input ? input.value : `科室${i+1}`;
+        departments.push({ name, weeks: weeksPerDept, scores: [] });
+      }
+    } else {
+      for (let i = 0; i < deptCount; i++) {
+        departments.push({ name: `科室${i+1}`, weeks: weeksPerDept, scores: [] });
+      }
+    }
+    // 更新名称输入框（如果需要）
+    if (useCustom) updateNameInputs();
+    // 重置评分表
+    document.getElementById('scoreStep').style.display = 'none';
+    document.getElementById('btnGen').style.display = 'none';
+  }
+
+  // 监听科室数量变化
+  document.getElementById('deptCount').addEventListener('change', function() {
+    updateDeptNames();
+  });
+
+  function generateScoreTable() {
+    // 收集选中的维度
+    const checkboxes = document.querySelectorAll('#presetDims input[type="checkbox"]:checked');
+    dimensions = Array.from(checkboxes).map(cb => cb.value);
+    const customStr = document.getElementById('customDims').value.trim();
+    if (customStr) {
+      const customList = customStr.split(',').map(s => s.trim()).filter(s => s.length > 0);
+      dimensions.push(...customList);
+    }
+    if (dimensions.length === 0) {
+      alert('请至少选择一个评价维度！');
+      return;
+    }
+
+    weeksPerDept = parseInt(document.getElementById('weeksCount').value);
+    // 更新所有科室的周数
+    departments.forEach(dept => dept.weeks = weeksPerDept);
+
+    // 构建表格 HTML
+    let html = '<table><thead><tr><th>科室</th><th>周次</th>';
+    dimensions.forEach(d => html += `<th>${d}</th>`);
+    html += '</tr></thead><tbody>';
+
+    departments.forEach((dept, deptIdx) => {
+      for (let w = 0; w < dept.weeks; w++) {
+        html += `<tr class="${w===0 ? 'dept-header' : 'week-row'}">`;
+        if (w === 0) {
+          html += `<td rowspan="${dept.weeks}" style="vertical-align:middle;font-weight:bold;">${dept.name}</td>`;
+        }
+        html += `<td>第${w+1}周</td>`;
+        dimensions.forEach((_, dimIdx) => {
+          html += `<td><input type="number" step="any" id="score_${deptIdx}_${w}_${dimIdx}" 
+                     placeholder="0" style="width:70px;" min="-5" max="5" value="0"></td>`;
+        });
+        html += '</tr>';
+      }
+    });
+    html += '</tbody></table>';
+    document.getElementById('scoreTableContainer').innerHTML = html;
+    document.getElementById('scoreStep').style.display = 'block';
+    document.getElementById('btnGen').style.display = 'block';
+  }
+
+  function isInvalid(val) {
+    return val === HOLIDAY || val === SICK;
+  }
+
+  function collectScores() {
+    // 从表格读取数据填充 departments
+    departments.forEach((dept, deptIdx) => {
+      dept.scores = [];
+      for (let w = 0; w < dept.weeks; w++) {
+        const weekScores = [];
+        for (let d = 0; d < dimensions.length; d++) {
+          const input = document.getElementById(`score_${deptIdx}_${w}_${d}`);
+          let val = parseFloat(input.value);
+          if (isNaN(val)) val = 0;
+          // 允许100或200
+          if (val === HOLIDAY || val === SICK) {
+            weekScores.push(val);
+          } else {
+            // 限制范围
+            val = Math.max(-5, Math.min(5, val));
+            weekScores.push(val);
+          }
+        }
+        dept.scores.push(weekScores);
+      }
+    });
+  }
+
+  function getValidMean(arr) {
+    const valid = arr.filter(v => !isInvalid(v));
+    if (valid.length === 0) return 0;
+    return valid.reduce((a,b)=>a+b,0) / valid.length;
+  }
+
+  function fillSample() {
+    // 快速填充示例数据（使用用户之前的评分样例）
+    const sampleData = {
+      "科室1": [[3,3,3,2,3.5,3,1,4,2,2],[3.5,2,3.3,3,3.5,3,1,5,2,2],[4,3,3,3.5,3.5,3,1,5,2,3],
+                [3.2,2,2.9,1,3.5,2,1,4,2,2],[3,1.5,2.8,-1,3.5,3,1,5,2,0],[2.5,2,2.8,1,3.5,3,1,5,2,-1],
+                [2,1,2.7,-2,3.5,3,1,5,2,1]],
+      "科室2": [[4,3,2.8,-1,4,3,0,5,4,3],[4,2,2.8,-3,4,2,0,5,4,1.7],[4,1,2.8,-4,4,1,0,5,4,3.6],
+                [4,-2,2.8,-3,4,2,0,5,4.3,3.8],[4.5,-4,2.8,-3,4,3,0,5,4.5,4],[5,-4.4,2.8,-3,4,3,0,5,5,4.3],
+                [100,100,100,100,100,100,100,100,100,100]]
+    };
+    if (departments.length === 0) return;
+    // 简单匹配科室名称（示例用前两个科室）
+    departments.forEach((dept, idx) => {
+      const key = idx === 0 ? "科室1" : (idx === 1 ? "科室2" : null);
+      if (key && sampleData[key] && dept.weeks === 7) {
+        dept.scores = sampleData[key];
+        for (let w=0; w<dept.weeks; w++) {
+          for (let d=0; d<dimensions.length; d++) {
+            const input = document.getElementById(`score_${idx}_${w}_${d}`);
+            if (input) input.value = dept.scores[w][d];
+          }
+        }
+      }
+    });
+  }
+
+  // ==================== 图表生成 ====================
+  function generateCharts() {
+    collectScores();
+    if (departments.length === 0 || dimensions.length === 0) {
+      alert('请先完成科室设置和评分表格！');
+      return;
+    }
+
+    document.getElementById('chartsArea').style.display = 'block';
+    drawOverallBar();
+    drawWeeklyTrend();
+    drawRadar();
+    drawDimensionComparison();
+    generateDataReport();   // 生成数据报告
+    // 滚动到图表区域
+    document.getElementById('chartsArea').scrollIntoView({ behavior: 'smooth' });
+  }
+
+  function drawOverallBar() {
+    const deptNames = departments.map(d => d.name);
+    const means = departments.map(dept => {
+      const allVals = dept.scores.flat();
+      return getValidMean(allVals);
+    });
+
+    // 使用科室固定颜色，而非正负分颜色
+    const colors = departments.map((_, i) => departmentColors[i % departmentColors.length]);
+
+    const trace = {
+      x: deptNames,
+      y: means,
+      type: 'bar',
+      marker: { color: colors },
+      text: means.map(v => v.toFixed(2)),
+      textposition: 'outside',
+    };
+
+    const layout = {
+      title: '📊 科室综合评分（有效均值）',
+      yaxis: { range: [-5, 5], title: '综合评分' },
+      plot_bgcolor: '#f9f9f9',
+    };
+
+    Plotly.newPlot('chart1', [trace], layout);
+  }
+
+  function drawWeeklyTrend() {
+    const traces = [];
+    departments.forEach((dept, idx) => {
+      const weeklyMeans = [];
+      const overallMean = getValidMean(dept.scores.flat()); // 用于填补全无效周
+      for (let w = 0; w < dept.weeks; w++) {
+        const weekVals = dept.scores[w];
+        const valid = weekVals.filter(v => !isInvalid(v));
+        if (valid.length > 0) {
+          weeklyMeans.push(valid.reduce((a,b)=>a+b,0) / valid.length);
+        } else {
+          weeklyMeans.push(overallMean); // 用科室总均值填补
+        }
+      }
+      traces.push({
+        x: Array.from({length: dept.weeks}, (_, i) => i+1),
+        y: weeklyMeans,
+        type: 'scatter',
+        mode: 'lines+markers',
+        name: dept.name,
+        marker: { size: 8 },
+        line: { color: departmentColors[idx % departmentColors.length] }
+      });
+    });
+
+    const layout = {
+      title: '📈 每周综合评分变化趋势（全无效周已用均值填充）',
+      xaxis: { title: '实习周次', dtick: 1 },
+      yaxis: { range: [-5, 5], title: '综合评分' },
+      plot_bgcolor: '#f9f9f9',
+      legend: { orientation: 'h', y: -0.2 },
+    };
+
+    Plotly.newPlot('chart2', traces, layout);
+  }
+
+  function drawRadar() {
+    const traces = departments.map((dept, idx) => {
+      const dimMeans = dimensions.map((_, dIdx) => {
+        const col = dept.scores.map(week => week[dIdx]);
+        return getValidMean(col);
+      });
+      return {
+        type: 'scatterpolar',
+        r: dimMeans.concat(dimMeans[0]), // 闭合
+        theta: dimensions.concat(dimensions[0]),
+        name: dept.name,
+        fill: 'toself',
+        marker: { color: departmentColors[idx % departmentColors.length] }
+      };
+    });
+
+    const layout = {
+      title: '🎯 多维度能力雷达图',
+      polar: {
+        radialaxis: { range: [-5, 5], tickvals: [-5,-3,0,3,5] }
+      },
+      legend: { orientation: 'h', y: -0.2 },
+    };
+
+    Plotly.newPlot('chart3', traces, layout);
+  }
+
+  function drawDimensionComparison() {
+    // 清空容器
+    const chartContainer = document.getElementById('chart4');
+    chartContainer.innerHTML = '';
+    // 每个维度一个子图（小图表），用均值填充缺失值
+    dimensions.forEach((dim, dimIdx) => {
+      const div = document.createElement('div');
+      div.id = `subchart_${dimIdx}`;
+      div.style.width = dimensions.length > 4 ? '48%' : '100%';
+      div.style.display = 'inline-block';
+      div.style.margin = '5px';
+      chartContainer.appendChild(div);
+
+      const tracesDim = departments.map((dept, idx) => {
+        // 计算该科室在该维度的有效均值
+        const dimValues = dept.scores.map(week => week[dimIdx]);
+        const fillValue = getValidMean(dimValues);
+        // 用均值替换无效值
+        const yVals = dimValues.map(v => isInvalid(v) ? fillValue : v);
+        return {
+          x: Array.from({length: dept.weeks}, (_, i) => i+1),
+          y: yVals,
+          type: 'scatter',
+          mode: 'lines+markers',
+          name: dept.name,
+          marker: { size: 6 },
+          line: { color: departmentColors[idx % departmentColors.length] }
+        };
+      });
+
+      Plotly.newPlot(div, tracesDim, {
+        title: dim,
+        xaxis: { dtick: 1 },
+        yaxis: { range: [-5, 5] },
+        margin: { t: 30, b: 40, l: 40, r: 10 },
+        legend: { orientation: 'h', y: -0.3 },
+      }, { responsive: true });
+    });
+  }
+
+  function generateDataReport() {
+    // 生成文本格式的数据报告，便于复制
+    let report = '【实习原始数据报告】\n\n';
+    report += `评价维度（${dimensions.length}个）：${dimensions.join('、')}\n`;
+    report += `每个科室实习周数：${weeksPerDept}\n`;
+    report += '说明：-5~5 评分，100=节假日，200=病假\n\n';
+
+    departments.forEach(dept => {
+      report += `----------------------------------------\n`;
+      report += `科室：${dept.name}\n`;
+      report += `周次\t${dimensions.join('\t')}\n`;
+      for (let w = 0; w < dept.weeks; w++) {
+        report += `第${w+1}周\t${dept.scores[w].join('\t')}\n`;
+      }
+      report += '\n';
+    });
+
+    // 添加AI分析模板问题
+    report += '========================================\n';
+    report += '📨 复制以下问题，粘贴给任意AI（如ChatGPT、DeepSeek等）获取个性化分析：\n';
+    report += '========================================\n\n';
+    report += '请分析我的医学实习数据，给出详细的成长报告。数据采用-5到5的评分，100表示节假日，200表示病假（已排除在均值计算外）。\n';
+    report += `科室数量：${departments.length}个，分别是：${departments.map(d=>d.name).join('、')}\n`;
+    report += `评价维度：${dimensions.join('、')}\n\n`;
+    report += '请从以下几个角度进行分析：\n';
+    report += '1. 各科室综合表现排名及原因推测\n';
+    report += '2. 我的核心优势与待改进领域（结合维度分数）\n';
+    report += '3. 实习期间成长趋势（周间变化）\n';
+    report += '4. 环境因素（如工作量、科室氛围）对我的影响\n';
+    report += '5. 针对我的特点，提出未来实习或职业发展的具体建议\n\n';
+    report += '以下是原始数据（请严格基于数据作答，避免猜测）：\n';
+    report += '(这里请粘贴上方“【实习原始数据报告】”中的全部内容)\n';
+
+    document.getElementById('dataReport').value = report;
+  }
+</script>
+</body>
+</html>
